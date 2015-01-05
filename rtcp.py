@@ -13,9 +13,11 @@ from socket import *
 from threading import Thread
 
 streams = [None, None]
+threads = []  # 存放两个线程对象
 debug = 1
 TIME_BEFORE_RETRY = 36
 MAX_RETRY = QUIT = 199
+BUFFER_SIZE = 1024
 
 
 def _usage():
@@ -27,20 +29,20 @@ def wait_for_stream(i):
     while 1:
         if streams[i] == QUIT:
             print('cannot connect to the target, quit now!')
-            sys.exit(1)
+            sys.exit(2)
         if streams[i]:
             return streams[i]
         else:
             sleep(1)
 
 
-def relay(source, target, num):
+def _relay(source, target, num):
     'num为当前流编号,主要用于调试目的，区分两个回路状态用。'
     try:
         while 1:
             # 注意，recv函数会阻塞，直到对端完全关闭
-            # （close后还需要一定时间才能关闭，最快关闭方法是shutdown）
-            buffer = source.recv(1024)
+            # close后还需要一定时间才能关闭，最快关闭方法是shutdown
+            buffer = source.recv(BUFFER_SIZE)
             if debug:
                 print(num, 'recv')
             if len(buffer) == 0:  # 对端关闭连接，读不到数据
@@ -73,7 +75,7 @@ def _listen(port, i):
         print('connected from:', addr)
         streams[i] = conn
         s2 = wait_for_stream(1 - i)
-        relay(conn, s2, i)
+        _relay(conn, s2, i)
 
 
 def _connect(host, port, i):
@@ -94,25 +96,26 @@ def _connect(host, port, i):
             print('connected to %s:%i' % (host, port))
             streams[i] = conn
             s2 = wait_for_stream(1 - i)
-            relay(conn, s2, i)
+            _relay(conn, s2, i)
 
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
         _usage()
         sys.exit(1)
-    tlist = []  # 线程列表，最终存放两个线程对象
     for i in [0, 1]:
         argv = sys.argv[i+1].lower().split(':')
         if len(argv) == 2 and argv[0] == 'l':
-            tlist.append(Thread(target=_listen, args=(int(sl[1]), i)))
+            argv = [int(argv[1]), i]
+            threads.append(Thread(target=_listen, args=argv))
         elif len(argv) == 3 and argv[0] == 'c':
-            tlist.append(Thread(target=_connect, args=(sl[1], int(sl[2]), i)))
+            argv = [argv[1], int(argv[2]), i]
+            threads.append(Thread(target=_connect, args=argv))
         else:
             _usage()
             sys.exit(1)
-    for t in tlist:
+    for t in threads:
         t.start()
-    for t in tlist:
+    for t in threads:
         t.join()
     sys.exit(0)
