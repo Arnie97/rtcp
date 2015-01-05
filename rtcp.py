@@ -8,66 +8,60 @@ c:host:port表示监听远程指定的端口
 '''
 
 import sys
-import time
+from time import sleep
 from socket import *
 from threading import Thread
 
 streams = [None, None]
 debug = 1
-time_before_retry = 36
-max_retry = 199
+TIME_BEFORE_RETRY = 36
+MAX_RETRY = QUIT = 199
 
 
 def _usage():
     print('Usage: ./rtcp.py [l:port | c:host:port]')
 
 
-def _get_another_stream(i):
+def wait_for_stream(i):
     '从streams获取另外一个流对象，如果当前为空，则等待'
-    if i == 0:
-        i = 1
-    elif i == 1:
-        i = 0
-    else:
-        raise OSError
-
     while 1:
-        if streams[i] == 'quit':
+        if streams[i] == QUIT:
             print('cannot connect to the target, quit now!')
             sys.exit(1)
         if streams[i]:
             return streams[i]
         else:
-            time.sleep(1)
+            sleep(1)
 
 
-def exchange(num, s1, s2):
-    '''交换两个流的数据。
-    num为当前流编号,主要用于调试目的，区分两个回路状态用。'''
+def relay(source, target, num):
+    'num为当前流编号,主要用于调试目的，区分两个回路状态用。'
     try:
         while 1:
-            # 注意，recv函数会阻塞，直到对端完全关闭（close后还需要一定时间才能关闭，最快关闭方法是shutdown）
-            buff = s1.recv(1024)
+            # 注意，recv函数会阻塞，直到对端完全关闭
+            # （close后还需要一定时间才能关闭，最快关闭方法是shutdown）
+            buffer = source.recv(1024)
             if debug:
                 print(num, 'recv')
-            if len(buff) == 0:  # 对端关闭连接，读不到数据
+            if len(buffer) == 0:  # 对端关闭连接，读不到数据
                 print(num, 'one closed')
                 break
-            s2.sendall(buff)
+            target.sendall(buffer)
             if debug:
                 print(num, 'sendall')
     except:
-        print(num, 'one connect closed.')
+        print(num, 'An connection has been closed.')
 
     try:
-        s1.shutdown(SHUT_RDWR)
-        s1.close()
-        s2.shutdown(SHUT_RDWR)
-        s2.close()
+        source.shutdown(SHUT_RDWR)
+        source.close()
+        target.shutdown(SHUT_RDWR)
+        target.close()
     except:
         pass
-    streams[0] = streams[1] = None
-    print(num, 'CLOSED')
+    finally:
+        streams[0] = streams[1] = None
+        print(num, 'CLOSED')
 
 
 def _listen(port, i):
@@ -77,16 +71,16 @@ def _listen(port, i):
     while 1:
         conn, addr = srv.accept()
         print('connected from:', addr)
-        streams[i] = conn  # 放入本端流对象
-        s2 = _get_another_stream(i)  # 获取另一端流对象
-        exchange(i, conn, s2)
+        streams[i] = conn
+        s2 = wait_for_stream(1 - i)
+        relay(conn, s2, i)
 
 
 def _connect(host, port, i):
     retry_count = 0
     while 1:
-        if retry_count > max_retry:
-            streams[i] = 'quit'
+        if retry_count > MAX_RETRY:
+            streams[i] = QUIT
             print('Time Out')
             return None
         conn = socket(AF_INET, SOCK_STREAM)
@@ -95,12 +89,12 @@ def _connect(host, port, i):
         except:
             print('Failed to connect %s:%s!' % (host, port))
             retry_count += 1
-            time.sleep(time_before_retry)
+            sleep(TIME_BEFORE_RETRY)
         else:
             print('connected to %s:%i' % (host, port))
             streams[i] = conn
-            s2 = _get_another_stream(i)  # 获取另一端流对象
-            exchange(i, conn, s2)
+            s2 = wait_for_stream(1 - i)
+            relay(conn, s2, i)
 
 
 if __name__ == '__main__':
