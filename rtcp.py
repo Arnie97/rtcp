@@ -1,65 +1,52 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-'''
-filename:rtcp.py
-@desc:
-利用python的socket端口转发，用于远程维护
-如果连接不到远程，会sleep 36s，最多尝试200(即两小时)
-
-@usage:
-./rtcp.py stream1 stream2
-stream为：l:port或c:host:port
+'''./rtcp.py stream[0] stream[1]
+stream - [l:port | c:host:port]
 l:port表示监听指定的本地端口
 c:host:port表示监听远程指定的端口
-
-@author: watercloud, zd, knownsec team
-@web: www.knownsec.com, blog.knownsec.com
-@date: 2009-7
 '''
 
-import socket
 import sys
-import threading
 import time
+from socket import *
+from threading import Thread
 
-streams = [None, None]  # 存放需要进行数据转发的两个数据流（都是SocketObj对象）
-debug = 1  # 调试状态 0 or 1
+streams = [None, None]
+debug = 1
+time_before_retry = 36
+max_retry = 199
 
 
 def _usage():
     print('Usage: ./rtcp.py [l:port | c:host:port]')
 
 
-def _get_another_stream(num):
-    '''
-    从streams获取另外一个流对象，如果当前为空，则等待
-    '''
-    if num == 0:
-        num = 1
-    elif num == 1:
-        num = 0
+def _get_another_stream(i):
+    '从streams获取另外一个流对象，如果当前为空，则等待'
+    if i == 0:
+        i = 1
+    elif i == 1:
+        i = 0
     else:
-        raise 'ERROR'
+        raise OSError
 
     while 1:
-        if streams[num] == 'quit':
+        if streams[i] == 'quit':
             print('cannot connect to the target, quit now!')
             sys.exit(1)
-        if streams[num]:
-            return streams[num]
+        if streams[i]:
+            return streams[i]
         else:
             time.sleep(1)
 
 
-def _xstream(num, s1, s2):
-    '''
-    交换两个流的数据
-    num为当前流编号,主要用于调试目的，区分两个回路状态用。
-    '''
+def exchange(num, s1, s2):
+    '''交换两个流的数据。
+    num为当前流编号,主要用于调试目的，区分两个回路状态用。'''
     try:
         while 1:
-            # 注意，recv函数会阻塞，直到对端完全关闭（close后还需要一定时间才能关闭，最快关闭方法是shutdow）
+            # 注意，recv函数会阻塞，直到对端完全关闭（close后还需要一定时间才能关闭，最快关闭方法是shutdown）
             buff = s1.recv(1024)
             if debug:
                 print(num, 'recv')
@@ -73,64 +60,47 @@ def _xstream(num, s1, s2):
         print(num, 'one connect closed.')
 
     try:
-        s1.shutdown(socket.SHUT_RDWR)
+        s1.shutdown(SHUT_RDWR)
         s1.close()
-    except:
-        pass
-
-    try:
-        s2.shutdown(socket.SHUT_RDWR)
+        s2.shutdown(SHUT_RDWR)
         s2.close()
     except:
         pass
-
-    streams[0] = None
-    streams[1] = None
+    streams[0] = streams[1] = None
     print(num, 'CLOSED')
 
 
-def _server(port, num):
-    '''
-    处理服务情况,num为流编号（第0号还是第1号）
-    '''
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+def _listen(port, i):
+    srv = socket(AF_INET, SOCK_STREAM)
     srv.bind(('0.0.0.0', port))
     srv.listen(1)
     while 1:
         conn, addr = srv.accept()
         print('connected from:', addr)
-        streams[num] = conn  # 放入本端流对象
-        s2 = _get_another_stream(num)  # 获取另一端流对象
-        _xstream(num, conn, s2)
+        streams[i] = conn  # 放入本端流对象
+        s2 = _get_another_stream(i)  # 获取另一端流对象
+        exchange(i, conn, s2)
 
 
-def _connect(host, port, num):
-    '''	处理连接，num为流编号（第0号还是第1号）
-
-    @note: 如果连接不到远程，会sleep 36s，最多尝试200(即两小时)
-    '''
-    not_connet_time = 0
-    wait_time = 36
-    try_cnt = 199
+def _connect(host, port, i):
+    retry_count = 0
     while 1:
-        if not_connet_time > try_cnt:
-            streams[num] = 'quit'
-            print('not connected')
+        if retry_count > max_retry:
+            streams[i] = 'quit'
+            print('Time Out')
             return None
-
-        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn = socket(AF_INET, SOCK_STREAM)
         try:
             conn.connect((host, port))
         except:
-            print('can not connect %s:%s!' % (host, port))
-            not_connet_time += 1
-            time.sleep(wait_time)
-            continue
-
-        print('connected to %s:%i' % (host, port))
-        streams[num] = conn  # 放入本端流对象
-        s2 = _get_another_stream(num)  # 获取另一端流对象
-        _xstream(num, conn, s2)
+            print('Failed to connect %s:%s!' % (host, port))
+            retry_count += 1
+            time.sleep(time_before_retry)
+        else:
+            print('connected to %s:%i' % (host, port))
+            streams[i] = conn
+            s2 = _get_another_stream(i)  # 获取另一端流对象
+            exchange(i, conn, s2)
 
 
 if __name__ == '__main__':
@@ -138,16 +108,12 @@ if __name__ == '__main__':
         _usage()
         sys.exit(1)
     tlist = []  # 线程列表，最终存放两个线程对象
-    targv = [sys.argv[1], sys.argv[2]]
     for i in [0, 1]:
-        s = targv[i]  # stream描述 c:ip:port 或 l:port
-        sl = s.split(':')
-        if len(sl) == 2 and sl[0].lower() == 'l':  # l:port
-            t = threading.Thread(target=_server, args=(int(sl[1]), i))
-            tlist.append(t)
-        elif len(sl) == 3 and sl[0].lower() == 'c':  # c:host:port
-            t = threading.Thread(target=_connect, args=(sl[1], int(sl[2]), i))
-            tlist.append(t)
+        argv = sys.argv[i+1].lower().split(':')
+        if len(argv) == 2 and argv[0] == 'l':
+            tlist.append(Thread(target=_listen, args=(int(sl[1]), i)))
+        elif len(argv) == 3 and argv[0] == 'c':
+            tlist.append(Thread(target=_connect, args=(sl[1], int(sl[2]), i)))
         else:
             _usage()
             sys.exit(1)
