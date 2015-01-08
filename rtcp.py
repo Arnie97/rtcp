@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-'''./rtcp.py stream[0] stream[1]
-stream - [l:port | c:host:port]
-l:port表示监听指定的本地端口
-c:host:port表示监听远程指定的端口
-'''
+# Authored by:
+# evilcos <evilcos@gmail.com>
+# Arnie97 <me@arnie97.progr.am>
+
+'Usage: ./rtcp.py [l@[host]:port | c@[host]:port]'
 
 import sys
 from time import sleep
@@ -13,109 +13,105 @@ from socket import *
 from threading import Thread
 
 streams = [None, None]
-threads = []  # 存放两个线程对象
-debug = 1
+threads = []
 TIME_BEFORE_RETRY = 36
 MAX_RETRY = QUIT = 199
 BUFFER_SIZE = 1024
 
 
-def _usage():
-    print('Usage: ./rtcp.py [l:port | c:host:port]')
-
-
-def wait_for_stream(i):
-    '从streams获取另外一个流对象，如果当前为空，则等待'
+def _wait_for_stream(id):
+    'Wait until streams[id] is available.'
     while 1:
-        if streams[i] == QUIT:
-            print('cannot connect to the target, quit now!')
+        if streams[id] == QUIT:
             sys.exit(2)
-        if streams[i]:
-            return streams[i]
+        elif streams[id]:
+            return streams[id]
         else:
             sleep(1)
 
 
-def _relay(source, target, num):
-    'num为当前流编号,主要用于调试目的，区分两个回路状态用。'
+def _relay(id):
+    'Relay packets from source to target.'
+    global streams
+    source, target = streams[id], streams[1-id]
     try:
         while 1:
-            # 注意，recv函数会阻塞，直到对端完全关闭
-            # close后还需要一定时间才能关闭，最快关闭方法是shutdown
             buffer = source.recv(BUFFER_SIZE)
-            if debug:
-                print(num, 'recv')
-            if len(buffer) == 0:  # 对端关闭连接，读不到数据
-                print(num, 'one closed')
+            buffer_length = len(buffer)
+            if buffer_length == 0:
+                print('*%d remote closed' % id)
                 break
+            else:
+                print('>%d %d received' % (id, buffer_length))
             target.sendall(buffer)
-            if debug:
-                print(num, 'sendall')
+            print('<%d %d sent' % (1 - id, buffer_length))
     except:
-        print(num, 'An connection has been closed.')
-
-    try:
-        source.shutdown(SHUT_RDWR)
-        source.close()
-        target.shutdown(SHUT_RDWR)
-        target.close()
-    except:
-        pass
-    finally:
-        streams[0] = streams[1] = None
-        print(num, 'CLOSED')
+        print('*%d connection closed' % id)
+    for pos in range(2):
+        try:
+            streams[pos].shutdown(SHUT_RDWR)
+            streams[pos].close()
+        except:
+            print('!%d unable to close a socket' % pos)
+        else:
+            print('*%d socket closed' % pos)
 
 
-def _listen(port, i):
+def _listen(port, id, host='0.0.0.0'):
+    'Listen an local TCP port as a stream.'
     srv = socket(AF_INET, SOCK_STREAM)
-    srv.bind(('0.0.0.0', port))
+    srv.bind((host, port))
     srv.listen(1)
     while 1:
         conn, addr = srv.accept()
-        print('connected from:', addr)
-        streams[i] = conn
-        s2 = wait_for_stream(1 - i)
-        _relay(conn, s2, i)
+        print(':%d connected from %s:%i' % (id, addr[0], addr[1]))
+        streams[id] = conn
+        another_stream = _wait_for_stream(1 - id)
+        _relay(id)
 
 
-def _connect(host, port, i):
+def _connect(port, id, host='localhost'):
+    'Connect to a remote TCP port as a stream.'
     retry_count = 0
     while 1:
         if retry_count > MAX_RETRY:
-            streams[i] = QUIT
-            print('Time Out')
+            streams[id] = QUIT
+            print('!%d request time out' % id)
             return None
         conn = socket(AF_INET, SOCK_STREAM)
         try:
             conn.connect((host, port))
         except:
-            print('Failed to connect %s:%s!' % (host, port))
+            print('!%d failed to connect %s:%i' % (id, host, port))
             retry_count += 1
             sleep(TIME_BEFORE_RETRY)
         else:
-            print('connected to %s:%i' % (host, port))
-            streams[i] = conn
-            s2 = wait_for_stream(1 - i)
-            _relay(conn, s2, i)
+            print(':%d connected to %s:%i' % (id, host, port))
+            streams[id] = conn
+            another_stream = _wait_for_stream(1 - id)
+            _relay(id)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        _usage()
+    try:
+        argv = sys.argv[1:]
+        assert len(argv) == 2
+        for pos in range(2):
+            type = argv[pos].lower().split('@')
+            assert len(type) == 2
+            assert type[0] in 'lc'
+            addr = type[1].rpartition(':')
+            kwargv = {'id': pos, 'port': int(addr[-1])}
+            if addr[0]:
+                kwargv['host'] = addr[0]
+            threads.append(Thread(
+                target = _connect if type[0]=='c' else _listen,
+                kwargs = kwargv
+            ))
+            threads[pos].start()
+        for thread in threads:
+            thread.join()
+        sys.exit(0)
+    except AssertionError:
+        print(__docs__)
         sys.exit(1)
-    for i in [0, 1]:
-        argv = sys.argv[i+1].lower().split(':')
-        if len(argv) == 2 and argv[0] == 'l':
-            argv = [int(argv[1]), i]
-            threads.append(Thread(target=_listen, args=argv))
-        elif len(argv) == 3 and argv[0] == 'c':
-            argv = [argv[1], int(argv[2]), i]
-            threads.append(Thread(target=_connect, args=argv))
-        else:
-            _usage()
-            sys.exit(1)
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    sys.exit(0)
