@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 
 # Authored by:
 # evilcos <evilcos@gmail.com>
@@ -60,6 +59,7 @@ def _relay(id):
 def _listen(port, id, host='0.0.0.0'):
     'Listen an local TCP port as a stream.'
     srv = socket(AF_INET, SOCK_STREAM)
+    srv.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(1)
     while 1:
